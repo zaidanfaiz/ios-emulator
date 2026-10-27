@@ -173,11 +173,18 @@ mind if you start several instances.
 | Area | State |
 |---|---|
 | Open-kernel QEMU boot (loader → BSD → `md0` → pid 1) | **verified**, `logs/qemu-open.log` |
-| iOS components fetch from Apple CDN (`sysimage/fetch.sh`) | **verified** download, extraction in progress |
-| APFS images (`REST=1 userland/build.sh`) | pending fetch |
-| Graphical iOS boot → Lock Screen → SpringBoard | pending images; unverified |
-| Input (touch, Home, power, volume), audio, network | unimplemented in this fork's test matrix |
-| Kernel rebuild from source in WSL2 | not yet run here (prebuilt kernel used for the smoke test) |
+| iOS components fetch from Apple CDN (`sysimage/fetch.sh`) | **verified**, `FETCH_EXIT=0` — 2.9 GB rootfs, 26 MB OS cryptex, 11 MB App cryptex, 2.6 GB dyld shared cache |
+| APFS images (`REST=1 userland/build.sh`) | **verified**, `system.apfs` 2.47 GB + `root.apfs` 4 MB, `BUILD_EXIT=0` |
+| iOS boot to userland (`launchd`, `backboardd`, `SpringBoard`) | **verified**, `logs/qemu.log`: `SpringBoard [7] job state = running`, `backboardd[13] SystemShell connected ... com.apple.springboard`, `BootUI addOverlay` |
+| Display (ramfb, loader-set 1125×2436) | **verified rendering** — BootUI overlay drawn white-on-black, `logs/screen-02.png` |
+| Lock Screen reached / Home Screen | **not yet shown** — BootUI overlay was on screen when the session ended; needs a longer run and input |
+| Input (touch, Home, power, volume) | untested here — `qemu/touch.py`, `virtio-tablet` are wired but unexercised |
+| Audio, network | untested here |
+| Kernel rebuild from source in WSL2 | not yet run here (prebuilt kernel used so far; needs theos + `iPhoneOS16.5.sdk`) |
+
+Notes on the boot above: a 300 s session on TCG, guest RAM 7 GB, ended by `timeout` (`qemu:
+terminating on signal 15`), no panic. Kernel and userland logs repeat (the console replays a
+block of lines a few thousand lines later), so count distinct events, not lines.
 
 Anything not in the table above has not been tested on this machine. An Apple logo is not a boot.
 
