@@ -1,197 +1,195 @@
 # ios-emulator
 
-Research environment for booting the **iOS 16.5 (20F66) user space** on **QEMU ARM64**
-(`-M virt`, aarch64) running inside **WSL2 on Windows**.
+Run the **iOS 16.5 (20F66) user space** — launchd, backboardd, SpringBoard, the stock apps —
+on an open-source XNU kernel inside **QEMU ARM64**, from Windows through WSL2.
 
-This repository is an independent project. Its kernel patch, boot loader, userland and
-QEMU glue started from the open-source [HakiOS](https://github.com/oosexgang/hakios-os)
-research bench (see [Credits](#credits)); this tree carries no upstream git history and is
-not a fork. Development, build configuration and the QEMU-first target are maintained here.
+This is a research bench, not a product and not a jailbreak. Nothing is flashed, nothing is
+installed on a phone, nothing talks to Apple's services. The whole system lives in RAM for the
+length of one QEMU session.
 
-> Status is evidence-based, not aspirational. Anything not reproduced on this machine is
-> listed as unverified in [Development status](#development-status).
+| | |
+|---|---|
+| **Target** | QEMU `-M virt`, aarch64, TCG (no KVM, no GPU passthrough) |
+| **Host** | Windows 10/11 + WSL2 (Ubuntu), or any Linux x86-64 |
+| **iOS line** | 16.5, build 20F66, iPhone10,3 (`D22AP`) — the only version this tree supports |
+| **Kernel** | xnu-8796.121.2 (APSL 2.0) with the project patch |
+| **Status** | kernel + loader boot verified in QEMU; full iOS graphical boot under test — see [Status](#status) |
 
----
+## What this repository is
 
-## What this is, and what it is not
+`ios-emulator` is an independent fork of [HakiOS](https://github.com/oosexgang/hackios-os)
+(see [Credits](#credits)). Upstream targets Qualcomm Android phones first and QEMU second;
+this fork keeps only the QEMU path and drops the phone path from active development.
 
-**Is**
-- A reproducible build of the open-source XNU kernel (`xnu-8796.121.2`) with Apple's iOS 16.5
-  user space on top: `launchd`, `backboardd`, `SpringBoard`, stock apps.
-- A QEMU-only research target. Apple's system components are pulled from Apple's own CDN at
-  build time; nothing of iOS is stored in this repository.
-- A bench for kernel, driver, filesystem, graphics and input work with real serial logs.
+The system stack, bottom-up:
 
-**Is not**
-- A jailbreak, an unlock, an activation bypass, or anything that talks to Apple services.
-  There is no Secure Enclave, no signing, no Apple ID.
-- A distribution of iOS. No Apple binary, image, font or screenshot is committed here.
-- A phone ROM. Physical-device support (`devices/`) is inherited from upstream and is out of
-  scope for this project's QEMU work.
+```
+QEMU virt (aarch64)                          edk2/AAVMF firmware
+  └── xnuloader/loader.efi      UEFI application — claims RAM, parses the payload,
+      │                          builds the device tree + boot_args, jumps to the kernel
+      └── payload.bin (XNUP)    kernel + ramdisk + cmdline, mapped at 0xF0000000
+          ├── mach.development.bcm2837   patched XNU, DEVELOPMENT_ARM64_BCM2837
+          ├── hello                      raw-syscall test binary (open path only)
+          └── system.apfs                via qemu/ram.img at the resident address → /dev/md0
+              └── launchd → backboardd → SpringBoard → apps
+```
 
----
+`root.apfs` (small, our init and launchd jobs) travels inside the payload as `/dev/md1`;
+`system.apfs` (2.5 GB, the selected iOS root filesystem) is preloaded through a sparse,
+reflinked `qemu/ram.img`.
 
 ## Requirements
 
-| Component | Requirement |
-|---|---|
-| Host | Windows 10/11, 16 GB RAM minimum (build + QEMU do not fit under 12 GB comfortably) |
-| WSL2 | Ubuntu 24.04+ (tested: 26.04 LTS), WSL 2.4+ (`wsl --version`) |
-| Disk | ~25 GB free for the source images, the APFS images and one QEMU session |
-| Guest RAM | 6 GB for the open-kernel smoke test (payload is mapped at `0xF0000000`) |
-| Network | Downloads ~7.4 GB from `updates.cdn-apple.com` (range requests, no IPSW needed) |
+Host: **16 GB RAM recommended** (guest uses 6–7 GB), ~25 GB free disk, 8+ cores.
 
-Build dependencies inside WSL:
+WSL2 / Linux packages:
 
 ```sh
 sudo apt install qemu-system-arm qemu-efi-aarch64 7zip lz4 clang lld \
-                 build-essential python3 curl xz-utils
+                 python3 build-essential bison flex autoconf automake libtool \
+                 libfuse3-dev pkg-config libssl-dev uuid-dev
 ```
 
-`7z` must be **7-Zip 23 or newer** — the APFS images in the iOS firmware cannot be read by
-`p7zip`. Ubuntu's `7zip` package (26.00) provides it.
+`sysimage/fetch.sh` needs **7-Zip 23 or newer** (it reads APFS). Ubuntu's `7zip` 26.x is fine;
+`p7zip-full` 16.x is **not**.
 
----
+Building the kernel from source additionally needs [theos](https://theos.dev) with its Linux
+toolchain and `iPhoneOS16.5.sdk`; `make qemu-open` and the prebuilt images work without it.
 
-## Quick start
+## Quick start (WSL2)
 
 ```sh
 git clone https://github.com/zaidanfaiz/ios-emulator.git
 cd ios-emulator
 
-sysimage/fetch.sh            # iOS 16.5 (20F66) components from Apple's CDN
-REST=1 userland/build.sh     # -> userland/root.apfs and userland/system.apfs
+# 1. iOS 16.5 (20F66) components, straight from Apple's CDN — no manual IPSW download.
+#    Fetches only the members needed (4.7 GB + 2.7 GB), ~7.4 GB on disk.
+sysimage/fetch.sh
 
+# 2. APFS images: userland/root.apfs and userland/system.apfs
+REST=1 userland/build.sh
+
+# 3. Boot it
 mkdir -p logs
-qemu/run-ios.sh 1200 -display gtk > logs/qemu.log
+qemu/run-ios.sh 1200 -display gtk > logs/qemu.log 2>&1
 ```
 
-First, and faster to validate the toolchain:
+The lock screen appears after a few minutes on TCG. In the window: mouse with the left button
+held is a finger, `H` is Home, `L` is the power button, `↑`/`↓` are volume.
+
+Nothing of Apple's is in this repository. `fetch.sh` pulls the disk images out of the public
+IPSW on Apple's CDN with HTTP range requests; no decryption, no circumvention.
+
+## QEMU usage
+
+`qemu/run-ios.sh [seconds] [extra qemu args]` — the real boot. Environment:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `QEMU_RAM_GB` | `7` | guest RAM; the kernel gets the phone's 4.2 GB window |
+| `QEMU_EFI` / `QEMU_VARS` | `/usr/share/edk2/aarch64/QEMU_EFI.fd` | aarch64 UEFI firmware; on Ubuntu use `/usr/share/AAVMF/AAVMF_CODE.fd` and `AAVMF_VARS.fd` |
+| `QEMU_NET` | unset | `1` adds a virtio NIC behind QEMU's user network |
+| `AUDIO` | unset | back end (`pa`, `pipewire`, `sdl`, `alsa`) or `FILE.wav` |
+| `QEMU_INSTANCE` | `0` | index for parallel instances (monitor `4444+10n`, QMP `4445+10n`) |
+
+`qemu/run.sh` is the open-kernel path (no Apple software): UEFI + loader + `hello` ramdisk.
+It defaults to `QEMU_MEM=6G` — the payload is mapped at `0xF0000000`, so a 2 GB guest aborts
+with `UEFI EXCEPTION ... far=f0000000`.
+
+Helpers: `qemu/screendump.sh` (picture through the monitor), `qemu/touch.py` (touches through
+QMP), `qemu/stop.sh` (clean shutdown — do not kill WSL).
+
+## Building from source
 
 ```sh
-# Apple-free path: open kernel + placeholder loader + raw-syscall init, no IPSW involved
-make qemu-open
+xnu/apply.sh             # XNU sources from Apple's GitHub + the patch -> xnu-src/
+xnu-deps/setup.sh        # dependencies, crosstools, SDK
+./xnu-build.sh -j8 -k    # -> xnu-src/.../BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+
+xnuloader/build.sh       # the loader (clang + lld-link, no EDK2 needed)
+REST=1 userland/build.sh # the APFS images
+xnuloader/mkpayload.py -o qemu/payload.bin \
+    kernel=prebuilt/mach.development.bcm2837 ramdisk=userland/hello --cmdline "cpus=1"
 ```
 
-UEFI firmware paths differ per distro. On Ubuntu/Debian:
+`make qemu-open` runs the Apple-free smoke test: kernel + placeholder loader + a static
+raw-syscall binary. Reaching `Hello from user space on Darwin!` means the loader, the MMU, BSD
+init, the RAM disk and the syscall path all work.
 
-```sh
-export QEMU_EFI=/usr/share/AAVMF/AAVMF_CODE.fd
-export QEMU_VARS=/usr/share/AAVMF/AAVMF_VARS.fd
-```
+## Layout
 
----
-
-## Architecture
-
-```
-                    qemu-system-aarch64 -M virt,gic-version=3
-                                   |
-        EDK2 (AAVMF_CODE.fd)  ->  XNULOADER (a UEFI application, loader.efi)
-                                   |  parses the XNUP payload at 0xF0000000
-                                   |  claims physical memory, builds the device tree
-                                   v
-                XNU (mach.development.bcm2837)  -- patched, open source
-                                   |
-                  BSD init  ->  md0 (APFS root, resident RAM disk)
-                                   |
-                       /sbin/launchd  ->  backboardd  ->  SpringBoard
-```
-
-- **Loader** (`xnuloader/`): EFI app, no EDK2 build needed. Reports `CurrentEL`, builds boot
-  args, loads the kernel and RAM disk, jumps at EL1.
-- **Kernel** (`xnu/hakios.patch` + `xnu/files/`): Apple's XNU with drivers for display, touch,
-  UFS, GPU, audio, modem. Under QEMU only the virt platform drivers are used.
-- **Userland** (`userland/`): small programs and libraries, an `rc` job set, and the APFS
-  image builder (`tools/apfs/mkapfs.py`) that packs the chosen iOS files into `system.apfs`.
-- **Images**: `system.apfs` is the root volume (2.5 GB), `root.apfs` holds init and jobs.
-
----
-
-## Resource notes (measured)
-
-Host used for these numbers: 16 GB RAM, 16 threads, WSL2 with `~/.wslconfig`:
-
-```ini
-[wsl2]
-memory=10GB
-processors=12
-swap=4GB
-```
-
-| Measurement | Value |
+| Path | Contents |
 |---|---|
-| WSL idle after clean boot | ~700 MB used |
-| QEMU open-kernel smoke test (6 GB guest) | boots to user space in <10 s of guest time |
-| Full iOS boot (`QEMU_RAM_GB=7`) | ~2.5–3 GB **host** RSS per instance |
-| WSL vhdx after cleanup | 8.5 GB file, 1.9 GB used inside |
+| `xnu/` | kernel patch (`hakios.patch`, APSL 2.0), driver files, `apply.sh` |
+| `xnuloader/` | the UEFI boot loader, `mkpayload.py`, `mkidentity.sh` |
+| `userland/` | our programs, launchd jobs (`rc.jobs.*`), `build.sh` (APFS images) |
+| `sysimage/` | scripts that fetch and lay out the iOS files from the IPSW |
+| `qemu/` | run scripts, monitor/QMP helpers, `payload.bin` |
+| `tools/` | APFS tooling, firmware helpers, test utilities |
+| `prebuilt/` | kernel and loader built from this tree |
+| `devices/` | upstream phone ports — **not used here**, kept for attribution |
+| `docs/` | upstream notes (Russian), cellular, GPU |
 
-`qemu/run-ios.sh` refuses to start when `/proc/meminfo` reports less than 3 GB available.
-Guest RAM is configurable: `QEMU_RAM_GB=n qemu/run-ios.sh 600`.
+## Resource use
 
----
+Measured on the reference host (16 GB RAM, 16 threads, Windows 11 + WSL2):
+
+| Thing | Value |
+|---|---|
+| WSL2 ceiling | `memory=10GB`, `processors=12`, `swap=4GB` (in `%USERPROFILE%\.wslconfig`) |
+| Guest RAM, real boot | 6–7 GB (`QEMU_RAM_GB`) |
+| QEMU host RSS, real boot | ~2.5–3 GB per instance |
+| QEMU TCG code cache | `tb-size=384` MB by default; QEMU's 1 GB default only costs host memory |
+| `qemu/ram.img` | 12 GB sparse, reflinked — not read into host RAM |
+
+WSL2 does not return freed page cache to Windows on its own; a stale 8 GB ceiling on a 16 GB
+host is the usual cause of "WSL eats my RAM". Cap it explicitly and keep `vmIdleTimeout` in
+mind if you start several instances.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| WSL fails to start, `WSL_E_CUSTOM_KERNEL_NOT_FOUND` | `~/.wslconfig` points at a missing custom kernel | Remove the `kernel=` line |
-| `bash: $'\r': command not found`, `syntax error near unexpected token` | scripts checked out with CRLF on Windows | Clone with `core.autocrlf=false`; repo has LF blobs |
-| `UEFI EXCEPTION ... far=f0000000` | guest RAM smaller than the payload address | `QEMU_MEM=6G` or more |
-| `run-ios.sh: no UEFI firmware at ...` | firmware not where the script expects | set `QEMU_EFI` / `QEMU_VARS` |
-| `fetch.sh: 7z is not installed` / APFS read errors | `p7zip` 16.x | install `7zip` ≥ 23 |
-| QEMU killed by the OS | guest RAM + host overcommit | lower `QEMU_RAM_GB`, raise WSL `memory=` |
+| `WSL_E_CUSTOM_KERNEL_NOT_FOUND` | `.wslconfig` points at a kernel that no longer exists | remove the `kernel=` line |
+| `run.sh: syntax error near unexpected token` / `$'\r'` | CRLF checkout of `*.sh` | `git config core.autocrlf false` and re-checkout |
+| `UEFI EXCEPTION ... far=f0000000` | guest RAM below 4 GB | `QEMU_MEM=6G` |
+| `run-ios.sh: ... file is missing` | images not built | `REST=1 userland/build.sh` |
+| `7z: Unsupported Method` on cryptex | LZBITMAP members | expected; `unzbm` finishes them, `fetch.sh` verifies |
+| `netboot`/`initproc failed to start` on the open path | `hello` exits 0 by design | not a failure — user space was reached |
+| SpringBoard never appears | no framebuffer | do not use `-display none` for the GUI boot; the loader needs a display |
 
-Logs land in `logs/`. `qemu/sym.py` and `qemu/symstack.py` turn kernel addresses into symbols
-from the built kernel; `qemu/screendump.sh` saves a PNG of the guest display through the
-monitor socket.
+## Status
 
----
-
-## Repository layout
-
-| Path | Contents |
+| Area | State |
 |---|---|
-| `xnu/` | XNU patch + custom driver files, `apply.sh`, `export.sh` |
-| `xnuloader/` | the UEFI boot loader |
-| `userland/` | init programs, libraries, `rc.*` job sets, APFS image build |
-| `sysimage/` | scripts that fetch and unpack the iOS 16.5 files (no Apple files kept) |
-| `qemu/` | QEMU run scripts, touch injection, screendump, symbolization |
-| `tools/` | APFS builder/checker, firmware and QMI utilities |
-| `prebuilt/` | kernel, loader and libraries built from this tree |
-| `devices/` | upstream's physical-device ports; unused by the QEMU target |
-| `docs/` | detailed notes (upstream, mostly Russian) |
+| Open-kernel QEMU boot (loader → BSD → `md0` → pid 1) | **verified**, `logs/qemu-open.log` |
+| iOS components fetch from Apple CDN (`sysimage/fetch.sh`) | **verified** download, extraction in progress |
+| APFS images (`REST=1 userland/build.sh`) | pending fetch |
+| Graphical iOS boot → Lock Screen → SpringBoard | pending images; unverified |
+| Input (touch, Home, power, volume), audio, network | unimplemented in this fork's test matrix |
+| Kernel rebuild from source in WSL2 | not yet run here (prebuilt kernel used for the smoke test) |
 
----
+Anything not in the table above has not been tested on this machine. An Apple logo is not a boot.
 
-## Development status
+## Limitations
 
-Verified on this machine (logs under `logs/`, not committed):
+- TCG only. No KVM on ARM guests under x86-64 WSL2, so expect minutes, not seconds, to the lock screen.
+- No Metal, no Secure Enclave, no Apple ID, no activation — by design.
+- Only iOS 16.5 / 20F66. Other versions have different kernel, loader and userland expectations.
+- Physical devices are out of scope for this fork (`devices/` is upstream material, unmaintained here).
 
-| Step | Result | Evidence |
-|---|---|---|
-| Build environment in WSL2 (qemu 10.2.1, 7z 26.00, lld) | working | `qemu-system-aarch64 --version` |
-| Open-kernel QEMU boot (no Apple software) | **boots to user space** | `logs/qemu-open.log`: `Hello from user space on Darwin!`, pid 1 on `md0`; panic `initproc failed to start` is expected — the test init exits 0 |
-| iOS 16.5 (20F66) component fetch | in progress | `logs/fetch.log` |
-| APFS image build (`REST=1 userland/build.sh`) | not yet run | — |
-| Full graphical iOS boot (Lock Screen, SpringBoard) | **unverified** | — |
+## Contributing
 
-Do not read this table as a promise: an entry says "working" only when a log or screenshot on
-this machine shows it.
+Read `AGENTS.md` for the operating rules (evidence over claims, LF line endings, incremental
+builds, bounded logs). Upstream's `CONTRIBUTING.md` still applies to shared code.
 
----
+## Credits and licenses
 
-## Credits
+- Upstream: **HakiOS** — <https://github.com/oosexgang/hackios-os> (kernel patch, loader,
+  userland jobs, APFS tooling, QEMU scripts). This fork keeps its code and attribution intact;
+  see `NOTICE`, `LEGAL.md`, `COMPLIANCE.md`, `THIRD_PARTY_LICENSES.md`.
+- XNU: Apple, Apache Public Source License 2.0 (`LICENSE.APSL`), changes published as source.
+- `ios-emulator` fork packaging and documentation: see `LICENSE`.
 
-This project would not exist without [HakiOS](https://github.com/oosexgang/hakios-os) by
-`@oodze` and the HakiOS contributors, who wrote the XNU patch, the loader, the driver set, the
-APFS tooling and the QEMU bring-up that this tree started from. Their names and license
-notices are kept in `NOTICE`, `LEGAL.md`, `COMPLIANCE.md` and `THIRD_PARTY_LICENSES.md`.
-
-- XNU and the kernel patch: Apple Public Source License 2.0 — `LICENSE.APSL`
-- Everything else: see `LICENSE` and the file headers
-- `sysimage/` scripts read Apple's public firmware archives without decrypting or bypassing
-  anything; the files themselves are never redistributed here
-
-"IOS", "iPhone", "XNU" and "Apple" are used only to describe what the code works with. This
-project is not affiliated with, sponsored by or endorsed by Apple Inc., Xiaomi or Qualcomm.
+No file of iOS is distributed here. iOS, iPhone, XNU and Apple are named only to describe what
+the code works with; this project is not affiliated with or endorsed by Apple.
