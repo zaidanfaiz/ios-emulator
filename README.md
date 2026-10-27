@@ -212,9 +212,9 @@ mind if you start several instances.
 | iOS boot to userland (`launchd`, `backboardd`, `SpringBoard`) | **verified**, `logs/qemu.log`: `SpringBoard [7] job state = running`, `backboardd[13] SystemShell connected ... com.apple.springboard`, `BootUI addOverlay` |
 | Display (ramfb, loader-set 1125×2436) | **verified rendering** — BootUI overlay drawn white-on-black, `logs/screen-02.png` |
 | Lock Screen | **stays, as asked** — `autounlock=0` prints `hakios: the lock screen stays until it is swiped away` (`logs/qemu-long5.log:1341`) and the screen at that moment is drawn, not black: `logs/l5-ui-now.ppm`, 1125×2436, all 2 740 500 pixels non-black. What is on it (clock, date) has not been read back pixel by pixel |
-| `/private/var` kept between runs (`VARSTORE=1`) | **writes and restores; not shown to save the wait, so not enabled by default** — the save path is proven (`logs/qemu-storeprobe.log`: `slot 0: generation 1, 209 entries, 19344 bytes`, `5 blocks into the flash`, `qemu/var.img` from zero blocks to 64) and the restore is too (`logs/qemu-run7.log`: `slot 0: generation 5 … 6717 entries, 16332312 bytes`, then `2944 directories, 628 files (15347820 bytes)`; `logs/qemu-run8.log`: generation 9, `3091 directories, 654 files (18232867 bytes)`). No run that restored it has reached `checkInAndWaitForDataMigration`, let alone the overlay: runs 7 and 8 were cut at 1600 and 1400 s, and run 12 (generation 9, 7037 entries, 19 MB) at 2400 s with a host as fast as run 5's — `backboardd` up 203 s after QEMU started, and `dataMigration` still not reached. Run 5 needed 831 s for that on a 121 s boot. One run is not proof that the store is why run 12 stalled, and no like-for-like pair exists yet, so it stays off. Run 8's two stack samples at 704 s and 1124 s are the same stack (`libsystem_kernel` → `CoreServices` → `ControlCenterServices` → `BaseBoard` → `libdispatch` on one thread, `libxpc` → `Foundation` → `CoreServices` on another, `ustacks` reporting `3 threads`). Run 8's periodic save also never finished: `saving into slot 1` and nothing after, `qemu/var.img` untouched since run 7. The ask on the way out goes unanswered (`the saver did not answer in 45000 ms`) |
+| `/private/var` kept between runs (`VARSTORE=1`) | **writes and restores; not shown to save the wait, so not enabled by default** — the save path is proven (`logs/qemu-storeprobe.log`: `slot 0: generation 1, 209 entries, 19344 bytes`, `5 blocks into the flash`, `qemu/var.img` from zero blocks to 64) and the restore is too (`logs/qemu-run7.log`: `slot 0: generation 5 … 6717 entries, 16332312 bytes`, then `2944 directories, 628 files (15347820 bytes)`; `logs/qemu-run8.log`: generation 9, `3091 directories, 654 files (18232867 bytes)`). No run that restored it has reached `checkInAndWaitForDataMigration`, let alone the overlay: runs 7 and 8 were cut at 1600 and 1400 s, and run 12 (generation 9, 7037 entries, 19 MB) never got a full window either — `backboardd` was up 203 s after QEMU started, and QEMU itself exited at ~440 s with nothing printed, so run 12 says nothing about the store in either direction. Run 5 needed 831 s for that call on a 121 s boot. Run 8's two stack samples at 704 s and 1124 s are the same stack (`libsystem_kernel` → `CoreServices` → `ControlCenterServices` → `BaseBoard` → `libdispatch` on one thread, `libxpc` → `Foundation` → `CoreServices` on another, `ustacks` reporting `3 threads`). Run 8's periodic save also never finished: `saving into slot 1` and nothing after, `qemu/var.img` untouched since run 7. The ask on the way out goes unanswered (`the saver did not answer in 45000 ms`) |
 | Home Screen (widgets, icon grid, dock) | **verified**, `logs/l2-1800.ppm`: SpringBoard's own page, 6–9 fps (`MiniIOMobileFramebuffer: 46 frames in 5003 ms`), `BootUI removeOverlayWithAnimationSettings: Removing the overlay` at guest 1707 s |
-| Boot to a drawn screen, QEMU / TCG, 4 vCPU (this host) | **measured, and not on every run** — run 5 (no store): `BootUI removeOverlayWithAnimationSettings: Removing the overlay` at wall 19:57:22 with the run loop's first turn at guest 1088.9 s (`tl: a 1088898620`); run 3 (older settings): 1763 s; run 6c (store holding 8 files): 1430 s. Runs 7, 8, 9, 10 and 12 did not get there inside their windows, with the store and without it — what makes one boot reach the overlay and the next not is still open, and the boot-time table below says why a short window cannot answer it |
+| Boot to a drawn screen, QEMU / TCG, 4 vCPU (this host) | **measured, and not on every run** — run 5 (no store): `BootUI removeOverlayWithAnimationSettings: Removing the overlay` at wall 19:57:22 with the run loop's first turn at guest 1088.9 s (`tl: a 1088898620`); run 3 (older settings): 1763 s; run 6c (store holding 8 files): 1430 s. Runs 7, 8, 9, 10, 12 and 13 did not get there, with the store and without it; run 13 came closest — `checkInAndWaitForDataMigration` at 1116 s, QEMU gone 177 s later. What makes one boot reach the overlay and the next not is still open, and the two tables below say why a short window cannot answer it |
 | Drawing cost, software renderer | **measured**, `logs/qemu-long5.log`: `MiniIOMobileFramebuffer: 37 frames in 5312 ms (6 a second), 8076 us each in the driver` at 1125×2436 — 2.74 Mpx a frame through TCG, no GPU. `fbscale=2` measured worse, not better (`54727 us each`, `logs/qemu-run7.log`), because the picture is still scaled up to the panel |
 | Input (touch, Home, power, volume) | partly tested — `virtio-tablet` events reach the iOS input stack (`hakios: input: sample type 1 finger 0 …`), a swipe changes the screen (`logs/l2-unlock.ppm` vs `logs/l2-unswiped.ppm`, and `logs/l5-after-swipe.ppm` vs `logs/l5-before-swipe.ppm`). The lag when tapping is measured, and it is not the driver: `tl: p` stamps each sample in the kernel, `tl: i` the window server's read of it and its handover to IOHID. Over run 5's 217 samples that were read, the wait from the kernel's post to the read is median 76.50 s (min 2.80 s, p75 188.02 s, none under a second) while the handover after the read is median 21.16 ms (p75 120.03 ms), and by the time a sample was read a median of 67 newer ones were already in the queue (`python3 tools/latency.py logs/qemu-long5.log`). The guest starves its own input thread, which is what a tap feels like 2.74 Mpx a frame of TCG later. No gesture verified end to end |
 | Audio, network | untested here |
@@ -239,9 +239,30 @@ the first `startup complete` out of `backboardd`; the migration column is
 
 Five times between the fastest and the slowest boot of one unchanged image is the first thing to
 rule out before blaming code or the store. Runs 9 and 10 were cut at 1500 s while run 9's guest was
-minutes behind run 5's at the same wall time; run 12 was given 2400 s on a 203 s boot and still did
-not reach the migration. Whether the variance is host load, QEMU's own thread scheduling or TCG's
-translation cache has not been separated — a wall-clock run start is not a guest-time zero.
+minutes behind run 5's at the same wall time. Whether the variance is host load, QEMU's own thread
+scheduling or TCG's translation cache has not been separated — a wall-clock run start is not a
+guest-time zero.
+
+A longer window does not buy a longer life either. The time is the last stamped guest line against
+the QEMU start epoch; `end` is how the process actually finished.
+
+| Run | Window | Last stamped line | End |
+|---|---|---|---|
+| 5 | 3600 s | 1577 s | panic — `Ticket spinlock[0xfffffff007afc880] timeout after 85097799 ticks`, then the loader's `== KERNEL LOG ==` |
+| 6c | 1600 s | 1425 s | killed by the host timeout |
+| 7 | 1600 s | 181 s | killed by the host timeout; the guest had stopped logging long before |
+| 8 | 1400 s | 955 s | killed by the host timeout |
+| 9 | 1500 s | 1297 s | killed by the host timeout |
+| 10 | 1500 s | 1319 s | the kernel returned to the loader at `loader_return_after=1500` |
+| 12 | 2400 s | 435 s | QEMU exit 0 with nothing printed |
+| 13 | 2400 s | 1293 s | QEMU exit 0 with nothing printed |
+
+Run 5's 3600 s window is beside the point: it panicked 8 minutes after the Lock Screen appeared. The
+two 2400 s runs were gone at 440 s and 1293 s. Run 13 came the closest without drawing the UI —
+`checkInAndWaitForDataMigration` at 1116 s, where run 5 reached the overlay 258 s after that call —
+and then QEMU exited without a dump. A panic prints `== KERNEL LOG ==`, as run 5's did, so run 13's
+exit is not one; it is what a guest reset looks like under `qemu/run.sh`'s `-no-reboot`. The panic
+run 5 ended with is not the screendump poller's doing either: run 13 never touched the monitor.
 
 Notes on the boot above: no panic, guest RAM 7 GB, four cores. Kernel and userland logs repeat
 (the console replays a block of lines a few thousand lines later), so count distinct events, not
