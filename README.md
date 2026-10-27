@@ -74,9 +74,14 @@ mkdir -p logs
 qemu/run-ios.sh 1200 -display gtk > logs/qemu.log 2>&1
 ```
 
-The lock screen appears after a few minutes on TCG (upstream's measurement; not yet reproduced
-on this machine — see [Development status](#development-status)). In the window: mouse with the
-left button held is a finger, `H` is Home, `L` is the power button, `↑`/`↓` are volume.
+The home screen arrives after about half an hour on TCG here, not the "few minutes" upstream
+measures on a phone: 1763 s of guest time at four cores, of which LaunchServices spends 25
+minutes re-registering every application because `/private/var` is a fresh memory filesystem at
+each boot (`userland/src/init.c` mounts it). Expect 6–9 frames a second once it is up. In the
+window: mouse with the left button held is a finger, `H` is Home, `L` is the power button,
+`↑`/`↓` are volume. `autounlock=0` in `CMDLINE` keeps the lock screen until it is swiped away;
+without it the port dismisses it 10 s in and lands on the home screen
+(`userland/src/inject_sb.c`).
 
 ### Where to build
 
@@ -167,6 +172,7 @@ mind if you start several instances.
 | `7z: Unsupported Method` on cryptex | LZBITMAP members | expected; `unzbm` finishes them, `fetch.sh` verifies |
 | `netboot`/`initproc failed to start` on the open path | `hello` exits 0 by design | not a failure — user space was reached |
 | SpringBoard never appears | no framebuffer | do not use `-display none` for the GUI boot; the loader needs a display |
+| Apple logo for 25 minutes | SpringBoard waits for LaunchServices, which registers every application afresh (`/private/var` is a new memory filesystem each boot) | not a hang: watch `lsd` in `python3 qemu/touch.py stacks top`, and the first `tl: a` line in the log when the run loop turns. Only a persistent `/private/var` removes the wait; upstream does that on the phone with `var_store=1`, which needs a flash partition QEMU does not have |
 
 ## Status
 
@@ -177,14 +183,23 @@ mind if you start several instances.
 | APFS images (`REST=1 userland/build.sh`) | **verified**, `system.apfs` 2.47 GB + `root.apfs` 4 MB, `BUILD_EXIT=0` |
 | iOS boot to userland (`launchd`, `backboardd`, `SpringBoard`) | **verified**, `logs/qemu.log`: `SpringBoard [7] job state = running`, `backboardd[13] SystemShell connected ... com.apple.springboard`, `BootUI addOverlay` |
 | Display (ramfb, loader-set 1125×2436) | **verified rendering** — BootUI overlay drawn white-on-black, `logs/screen-02.png` |
-| Lock Screen reached / Home Screen | **not yet shown** — BootUI overlay was on screen when the session ended; needs a longer run and input |
-| Input (touch, Home, power, volume) | untested here — `qemu/touch.py`, `virtio-tablet` are wired but unexercised |
+| Lock Screen | **not yet shown** — SpringBoard dismisses it 10 s in unless `autounlock=0` is passed |
+| Home Screen (widgets, icon grid, dock) | **verified**, `logs/l2-1800.ppm`: SpringBoard's own page, 6–9 fps (`MiniIOMobileFramebuffer: 46 frames in 5003 ms`), `BootUI removeOverlayWithAnimationSettings: Removing the overlay` at guest 1707 s |
+| Boot to a drawn screen, QEMU / TCG, 4 vCPU (this host) | **measured** 1763 s guest time (`tl: a 1763048196 …`, the main run loop's first turn) |
+| Input (touch, Home, power, volume) | partly tested — `virtio-tablet` events reach the iOS input stack (`hakios: input: sample type 1 finger 0 …`), and a swipe changed the screen (`logs/l2-unlock.ppm` vs `logs/l2-unswiped.ppm`); no gesture verified end to end |
 | Audio, network | untested here |
 | Kernel rebuild from source in WSL2 | not yet run here (prebuilt kernel used so far; needs theos + `iPhoneOS16.5.sdk`) |
 
-Notes on the boot above: a 300 s session on TCG, guest RAM 7 GB, ended by `timeout` (`qemu:
-terminating on signal 15`), no panic. Kernel and userland logs repeat (the console replays a
-block of lines a few thousand lines later), so count distinct events, not lines.
+Notes on the boot above: 2400 s at four cores, guest RAM 7 GB, ended by `timeout`
+(`QEMU_EXIT=124`), no panic. Kernel and userland logs repeat (the console replays a block of
+lines a few thousand lines later), so count distinct events, not lines. Where the time goes:
+`backboardd` puts the Apple logo up at guest ~200 s, SpringBoard's main thread then waits in
+LaunchServices (`CoreServices` bundle loading, `pthread_cond_wait`) while the `lsd` worker
+thread holds the lock and asks it over synchronous XPC; `lsd` finishes at guest ~1700 s, the
+overlay comes off, and the run loop turns 60 s later. Stacks at any time: `python3
+qemu/touch.py stacks SpringBoard`, then name the addresses with `python3 qemu/dscimg.py
+sysimage/20F66__iPhone10,3_6/dyld_shared_cache_arm64 ADDR…` (`ipsw dyld a2s` cannot: it wants
+a `<cache>.symbols` file that 20F66's cryptex keeps decmpfs-compressed).
 
 Anything not in the table above has not been tested on this machine. An Apple logo is not a boot.
 
