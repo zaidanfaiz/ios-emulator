@@ -60,6 +60,39 @@ not in the device tree, it is not known yet.
 The IPA argument is the real blocker for cellular: the X5 Pro driver carries an IPA-4.11 SRAM
 layout as hardcoded data. A different IPA version is a driver port, not a configuration change.
 
+## Root vs. unlocked bootloader
+
+Two different things, and only one of them is enough to collect data.
+
+| | Gives you | Enough to boot a UEFI port? |
+|---|---|---|
+| **Root** (`adb shell id -u` = 0) | `/dev/block/by-name/*`, full `/proc/iomem`, `dmesg`, `/vendor/firmware_mnt`, `/sys/firmware/fdt` | no, but it is what every value below needs |
+| **Unlocked bootloader** (`ro.boot.flash.locked` = 0) | `fastboot boot <shim>` — running an image without flashing it | yes, this is the gate |
+
+A rooted phone with a locked bootloader can still be dumped completely; it just cannot run the
+result. Check with:
+
+```sh
+adb shell getprop ro.boot.flash.locked        # 0 = unlocked
+adb shell getprop ro.boot.verifiedbootstate   # orange = unlocked
+```
+
+## Collecting what a UEFI port needs
+
+```sh
+devices/poco-f7-ultra/dump-partitions.sh      # root shell; read-only, streams blocks over adb
+```
+
+| Block | Why it matters |
+|---|---|
+| `abl` | Qualcomm's Android Bootloader — **already an EDK2/UEFI firmware image**. Its platform init and DXE drivers are the reference an SM8750 Mu-Silicium port is derived from. Reading it is reverse engineering, and the only honest source for this SoC's numbers. |
+| `dtbo`, `dtbo*` | device tree overlays for this exact board |
+| `boot` | Android kernel + ramdisk: cmdline, memory layout, `console=` |
+| `vendor_boot` | vendor ramdisk: module and firmware paths |
+| `iomem.txt`, `dmesg.txt` | the running kernel's own map and driver probes |
+
+Output lands in `dumps/`, which is git-ignored: it is Qualcomm's and Xiaomi's code, not ours.
+
 ## Not in this directory, on purpose
 
 - **No prebuilt UEFI images.** `../../devices/poco-x5-pro/prebuilt/SILICIUM_UEFI.fd` is built

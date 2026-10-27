@@ -62,8 +62,7 @@ __pycache__/
 !/sysimage/fetch.sh
 !/sysimage/*.py
 
-# of xnu-deps only what is ours; setup.sh fetches and builds the rest
-/xnu-deps/*
+# of xnu-deps only what is ours; setup.sh fetches and builds the rest/xnu-deps/*
 !/xnu-deps/setup.sh
 !/xnu-deps/gen-iig-stubs.py
 !/xnu-deps/hostinc/
@@ -97,3 +96,9 @@ __pycache__/
 /xnuloader/identity.h
 !/xnuloader/im4p.py
 !/xnuloader/mkidentity.sh
+
+# device ports: the vendor's and the bootloader's blocks stay out (devices/ is otherwise tracked)
+/devices/*/dumps/
+/devices/*/device-info.txt
+/devices/*/device-tree.dtb
+
