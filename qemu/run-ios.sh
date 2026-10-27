@@ -24,6 +24,11 @@
 #      QEMU_INSTANCE=<n>   to run several at once: each number has its own monitor and QMP ports
 #                          (4444 + 10n, 4445 + 10n); the file qemu/instance sets it for a working copy.
 #                          touch.py, screendump.sh and stop.sh follow the same rule.
+#      VARSTORE=<path>     keep the data volume of iOS (/private/var) between runs, in a disk image
+#                          QEMU serves to the guest: the phone's flash is not there to hold it.
+#                          Default qemu/var.img, made 12 GiB big and sparse the first time (the
+#                          offsets of the store are the phone's, src/var_store.c). See README,
+#                          "The data volume between runs".
 # The machine has a display (ramfb; without one SpringBoard does not start): the loader sets a mode of the
 # size of the phone's screen. qemu/screendump.sh saves a picture of it (through the monitor on port 4444).
 # Add "-display gtk" to see it in a window and use it with the mouse: the pointer with the left button
@@ -68,6 +73,23 @@ if [ -n "$QEMU_NET" ] && [ "$QEMU_NET" != 0 ]; then
 	NET=(-netdev user,id=net0 -device virtio-net-device,netdev=net0)
 	CMDLINE="virtio_net=1 $CMDLINE"
 fi
+# the store of the data volume: a raw image on the host, the guest's own virtio-blk device
+STORE=()
+if [ -n "$VARSTORE" ]; then
+	case "$VARSTORE" in
+	1) VARSTORE=qemu/var.img ;;
+	esac
+	# STORE_AT + SLOTS * SLOT_BYTES of src/var_store.c, plus a block of room
+	STORE_BYTES=$((8589934592 + 2 * 2147483648 + 1048576))
+	if [ ! -f "$VARSTORE" ]; then
+		truncate -s "$STORE_BYTES" "$VARSTORE" || exit 1
+		echo "run-ios.sh: made $VARSTORE, $((STORE_BYTES / 1024 / 1024)) MB, sparse" >&2
+	fi
+	# qemu/run.sh does not run from this directory (the memory backend above is named the same way)
+	VARSTORE=$(readlink -f "$VARSTORE") || exit 1
+	STORE=(-drive "file=$VARSTORE,format=raw,if=none,id=varstore" -device virtio-blk-device,drive=varstore)
+	CMDLINE="virtio_blk=1 virtio_blk_rw=1 var_store=1 var_store_dev=/dev/rvblk0 $CMDLINE"
+fi
 # the sound device (QEMU 8.2 or newer has one for this machine): the kernel's sink for /dev/hakios-audio
 SOUND=()
 if qemu-system-aarch64 -device help 2>/dev/null | grep -q '"virtio-sound-device"'; then
@@ -80,9 +102,14 @@ if qemu-system-aarch64 -device help 2>/dev/null | grep -q '"virtio-sound-device"
 fi
 xnuloader/mkpayload.py -o qemu/payload.bin kernel=$K ramdisk=$ROOT --rdres "$(printf '%x' "$(stat -c %s "$IMG")")" \
 	--cmdline "loader_return_after=$SECS epoch=$(date +%s) virtio_input=1 $CMDLINE" >/dev/null || exit 1
-QEMU_MEM=${RAM_GB}G exec qemu/run.sh $((SECS + 40)) \
+# 40 s past the run's own time was enough while nothing waited on the way out. The kernel's orderly
+# return asks the saver for the data volume and waits up to var_save_ms for the answer
+# (bsd/dev/hakios.ufs.c, hakios_var_save_on_return), so the host has to outwait that: run 6's saver
+# was still writing when the host's kill arrived, and run 6c asks for 45 s of that (logs/
+# qemu-storeprobe.log: "the saver did not answer in 20000 ms").
+QEMU_MEM=${RAM_GB}G exec qemu/run.sh $((SECS + 120)) \
 	-object memory-backend-file,id=ram,size=$RAM_SIZE,mem-path="$PWD/qemu/ram.img",share=off \
 	-machine memory-backend=ram \
-	-global virtio-mmio.force-legacy=false -device virtio-tablet-device -device virtio-keyboard-device "${NET[@]}" "${SOUND[@]}" \
+	-global virtio-mmio.force-legacy=false -device virtio-tablet-device -device virtio-keyboard-device "${NET[@]}" "${SOUND[@]}" "${STORE[@]}" \
 	-device ramfb -monitor tcp:127.0.0.1:$((4444 + 10 * INSTANCE)),server,nowait \
 	-qmp tcp:127.0.0.1:$((4445 + 10 * INSTANCE)),server,nowait "$@"

@@ -51,7 +51,14 @@
 #define STORE_AT        8589934592LL            /* darwin's block 2097152: past the cryptexes, with room to spare */
 #define SLOT_BYTES      0x80000000LL            /* 2 GiB a slot, two slots */
 #define SLOTS           2
-#define DEVICE          "/dev/rufs_darwin"
+/*
+ * Where the store lives: the phone's own partition, or, under QEMU, a disk image on the host
+ * that this kernel serves as a block device (boot-arg var_store_dev=, bsd/dev/hakios.virtio_blk.c
+ * with virtio_blk=1 virtio_blk_rw=1).  At the phone's offsets either way, which is why the image
+ * has to be as big as the partition is: STORE_AT below.
+ */
+static char store_path[128] = "/dev/rufs_darwin";
+#define DEVICE          store_path
 #define ROOT            "/private/var"
 #define MAX_PATH        1024
 #define MAX_DEPTH       32
@@ -137,6 +144,58 @@ boot_arg_is(const char *name, const char *value)
 		}
 	}
 	return 0;
+}
+
+/* What NAME= says among the kernel's arguments, or NULL. See store_path. */
+static const char *
+boot_arg_value(const char *name)
+{
+	static char args[1024];
+	size_t len = sizeof(args) - 1, n = strlen(name);
+
+	if (sysctlbyname("kern.bootargs", args, &len, NULL, 0) != 0) {
+		return NULL;
+	}
+	args[len < sizeof(args) ? len : sizeof(args) - 1] = 0;
+	for (char *p = args; *p;) {
+		while (*p == ' ') {
+			p++;
+		}
+		if (strncmp(p, name, n) == 0 && p[n] == '=') {
+			return p + n + 1;
+		}
+		while (*p && *p != ' ') {
+			p++;
+		}
+	}
+	return NULL;
+}
+
+/*
+ * The device the store is in: the phone's, unless the kernel's arguments name another one
+ * (var_store_dev=/dev/rvblk0 under QEMU).  Named once, at the start, so that everything below
+ * reads it from store_path.
+ */
+static void
+store_device(void)
+{
+	const char *named = boot_arg_value("var_store_dev");
+	const char *end;
+	size_t n;
+
+	if (named == NULL) {
+		return;
+	}
+	for (end = named; *end != 0 && *end != ' '; end++) {
+		/* the value ends at the blank that starts the next argument */
+	}
+	n = (size_t)(end - named);
+	if (n == 0 || n >= sizeof(store_path)) {
+		printf("var_store: var_store_dev= names no device; using %s\n", store_path);
+		return;
+	}
+	memcpy(store_path, named, n);
+	store_path[n] = 0;
 }
 
 static long
@@ -1243,6 +1302,9 @@ save_once(void)
 {
 	int ok;
 
+	/* said before anything that can block: a save that never got further than this is told apart
+	 * from one that was never asked for at all (no line here means the ask was not seen) */
+	printf("var_store: saving now\n");
 	/*
 	 * The device is opened for the save and closed again, not held: while a write is in flight
 	 * this kernel's own transfer list is out of the controller, and it goes back in when the
@@ -1362,6 +1424,7 @@ main(int argc, char **argv, char **envp)
 
 	(void)envp;
 	crc_init();
+	store_device();
 	if (strcmp(what, "stamp") == 0) {
 		return stamp(argc > 2 ? argv[2] : "/private/var/hakios-stamp") ? 0 : 1;
 	}

@@ -1,0 +1,8 @@
+# Commands run by the launchd job com.hakios.demo (see com.hakios.demo.plist).
+# Probe: does a write to the store device reach the host's disk image at all? The saver's own save,
+# run this early in the boot (a few hundred files of /private/var), then the slots read back. The
+# long runs' saver gets as far as "saving into slot 0" and stops (logs/qemu-probe1.log) while
+# qemu/var.img keeps zero blocks, so the question is whether any write gets out of the guest.
+/redwood/bin/var_store show
+/redwood/bin/var_store save
+/redwood/bin/var_store show

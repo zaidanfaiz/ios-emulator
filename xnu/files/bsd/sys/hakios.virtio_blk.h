@@ -10,5 +10,6 @@
 
 void hakios_virtio_blk_init(void);
 bool hakios_virtio_blk_dev(dev_t dev);    /* one of its devices */
+bool hakios_virtio_blk_writable(void);    /* virtio_blk_rw=1 and a device is up: writes are taken */
 
 #endif /* _SYS_HAKIOS_VIRTIO_BLK_H_ */

@@ -51,6 +51,7 @@
 #include <sys/sysctl.h>
 #include <sys/uio.h>
 #include <sys/hakios.input.h>
+#include <sys/hakios.virtio_blk.h>
 #include <libkern/crc.h>
 #include <vm/memory_types.h>
 #include "hakios.ufshc.h"
@@ -905,7 +906,10 @@ hakios_var_save_on_return(void)
 	uint32_t ms = VAR_SAVE_MS;
 	uint64_t waited = 0;
 
-	if (!ufs_ready || ufs_write_part < 0 || ufs_var_save != VAR_SAVE_IDLE) {
+	if ((!ufs_ready || ufs_write_part < 0) && !hakios_virtio_blk_writable()) {
+		return;
+	}
+	if (ufs_var_save != VAR_SAVE_IDLE) {
 		return;
 	}
 	PE_parse_boot_argn("var_save_ms", &ms, sizeof(ms));

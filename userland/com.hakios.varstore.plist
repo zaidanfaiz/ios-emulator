@@ -7,11 +7,17 @@
 	<!-- with var_store=1 among the kernel's arguments: stays for the run and writes /private/var into
 	     the flash when the kernel says the run is ending (src/var_store.c, watch); without, it ends at
 	     once. An argument after "watch" is seconds between saves of its own accord as well; there is
-	     none by default, because each one costs seconds of the run and a hundred-odd megabytes. -->
+	     none by default, because each one costs seconds of the run and a hundred-odd megabytes.
+	     Under QEMU one is asked for and it is short: a run there is half an hour, and the ask that
+	     comes as the kernel goes back to the loader is not answered at all (logs/qemu-long6.log:
+	     "the data volume is asked for" and then nothing, the run killed 45 s later), while a run
+	     that panics first (logs/qemu-long5.log, a ticket spinlock timeout) leaves the store as it
+	     was. Four of these fit in a run. -->
 	<key>ProgramArguments</key>
 	<array>
 		<string>/redwood/bin/var_store</string>
 		<string>watch</string>
+		<string>300</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
