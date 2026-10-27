@@ -74,8 +74,18 @@ mkdir -p logs
 qemu/run-ios.sh 1200 -display gtk > logs/qemu.log 2>&1
 ```
 
-The lock screen appears after a few minutes on TCG. In the window: mouse with the left button
-held is a finger, `H` is Home, `L` is the power button, `↑`/`↓` are volume.
+The lock screen appears after a few minutes on TCG (upstream's measurement; not yet reproduced
+on this machine — see [Development status](#development-status)). In the window: mouse with the
+left button held is a finger, `H` is Home, `L` is the power button, `↑`/`↓` are volume.
+
+### Where to build
+
+Build inside the WSL filesystem (`~/ios-emulator`), not on `/mnt/c` or `/mnt/d`. The iOS root
+filesystem is 43,230 small files: on ext4 the extraction takes a minute, over the 9p mount it
+takes hours, and `rm -rf` on a deep 9p tree fails with `Directory not empty`, which makes the
+next `7z` abort with `File exists`. Keep the git clone wherever you like; keep the artifacts on
+ext4.
+
 
 Nothing of Apple's is in this repository. `fetch.sh` pulls the disk images out of the public
 IPSW on Apple's CDN with HTTP range requests; no decryption, no circumvention.

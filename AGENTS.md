@@ -37,6 +37,9 @@ make qemu-open                    # toolchain smoke test (no Apple software)
 qemu/run-ios.sh 600 -display gtk  # real boot
 ```
 
+- Build in the WSL filesystem (`~/ios-emulator`), never on `/mnt/d`: 43k small files over 9p
+  take hours to extract and `rm -rf` there fails with `Directory not empty`. Git can live on
+  either side; artifacts belong on ext4.
 - Incremental only: `userland/build.sh` caches per-stage; do not wipe `sysimage/` between runs
   unless `select-system.py` changed (then `KEEP=1` keeps `rootfs.dmg`).
 - Async work goes to `logs/<step>.log`; read the tail, never dump a whole boot log into chat.
