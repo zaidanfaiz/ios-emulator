@@ -106,6 +106,25 @@ IPSW on Apple's CDN with HTTP range requests; no decryption, no circumvention.
 | `QEMU_NET` | unset | `1` adds a virtio NIC behind QEMU's user network |
 | `AUDIO` | unset | back end (`pa`, `pipewire`, `sdl`, `alsa`) or `FILE.wav` |
 | `QEMU_INSTANCE` | `0` | index for parallel instances (monitor `4444+10n`, QMP `4445+10n`) |
+| `QEMU_SMP` | `1` | guest cores; the kernel uses `cpus=N` of them (`CMDLINE="cpus=4"` below) |
+| `VARSTORE` | unset | `1` (or a path) keeps `/private/var` between runs in a sparse 12 GB disk image (`qemu/var.img`); `qemu/var.img` holds slot 0 and slot 1 at 8 GiB and 10 GiB, two of the two-slot store `userland/src/var_store.c` writes |
+| `CMDLINE` | unset | extra boot arguments, appended to `virtio_input=1` — see the table below |
+
+Boot arguments worth knowing under QEMU:
+
+| Argument | Meaning |
+|---|---|
+| `cpus=N` | cores the kernel runs on |
+| `autounlock=0` | the Lock Screen stays until it is swiped up; without it SpringBoard dismisses it 10 s in |
+| `fbscale=2` | 375×812 points drawn at 2 px a point instead of 3, then scaled up to the panel. Upstream notes a red bar at the top of SpringBoard as the price. Measured once here it is not the lever it looks like — the scale-up still writes all 2.74 Mpx: `logs/qemu-run7.log` reports `3 frames in 5497 ms, 54727 us each in the driver` where run 5 reports `8076 us each` at the default |
+| `touch_lat=1` | print a `tl: i` line per touch sample: when the kernel posted it, when the injector read it, when it reached IOHID (all in microseconds) |
+| `var_save_ms=N` | how long the kernel waits for the saver's answer on the way back to the loader (default 20 000) |
+| `applog=1 applog_name=SpringBoard` | send SpringBoard's own log to the console |
+
+A run's `VARSTORE` block also sets `virtio_blk=1 virtio_blk_rw=1 var_store=1
+var_store_dev=/dev/rvblk0`: the store arrives as a writable virtio-blk device (`/dev/rvblk0`,
+12 289 MB, logged `slot 28`), and `userland/src/var_store.c` reads and writes it through
+`kern.hakios.var_save`.
 
 `qemu/run.sh` is the open-kernel path (no Apple software): UEFI + loader + `hello` ramdisk.
 It defaults to `QEMU_MEM=6G` — the payload is mapped at `0xF0000000`, so a 2 GB guest aborts
@@ -113,6 +132,11 @@ with `UEFI EXCEPTION ... far=f0000000`.
 
 Helpers: `qemu/screendump.sh` (picture through the monitor), `qemu/touch.py` (touches through
 QMP), `qemu/stop.sh` (clean shutdown — do not kill WSL).
+
+Do not poll `qemu/screendump.sh` while a run is in flight: the monitor is serialised with the
+guest, and a poller ended run 5 with a ticket spinlock timeout (`logs/qemu-long5.log`). Take the
+picture once, at a known guest time, or drive input over QMP (`qemu/touch.py`), which does not
+disturb the guest's own progress.
 
 ## Building from source
 
@@ -156,6 +180,7 @@ Measured on the reference host (16 GB RAM, 16 threads, Windows 11 + WSL2):
 | QEMU host RSS, real boot | ~2.5–3 GB per instance |
 | QEMU TCG code cache | `tb-size=384` MB by default; QEMU's 1 GB default only costs host memory |
 | `qemu/ram.img` | 12 GB sparse, reflinked — not read into host RAM |
+| `qemu/var.img` (with `VARSTORE=1`) | 12 GB sparse; 28 896 KB after a 1600 s run (blocks 57 792) — the store's payload is 16 MB, the rest is what the two-slot layout pads |
 
 WSL2 does not return freed page cache to Windows on its own; a stale 8 GB ceiling on a 16 GB
 host is the usual cause of "WSL eats my RAM". Cap it explicitly and keep `vmIdleTimeout` in
@@ -172,7 +197,10 @@ mind if you start several instances.
 | `7z: Unsupported Method` on cryptex | LZBITMAP members | expected; `unzbm` finishes them, `fetch.sh` verifies |
 | `netboot`/`initproc failed to start` on the open path | `hello` exits 0 by design | not a failure — user space was reached |
 | SpringBoard never appears | no framebuffer | do not use `-display none` for the GUI boot; the loader needs a display |
-| Apple logo for 25 minutes | SpringBoard waits for LaunchServices, which registers every application afresh (`/private/var` is a new memory filesystem each boot) | not a hang: watch `lsd` in `python3 qemu/touch.py stacks top`, and the first `tl: a` line in the log when the run loop turns. Only a persistent `/private/var` removes the wait; upstream does that on the phone with `var_store=1`, which needs a flash partition QEMU does not have |
+| Apple logo for 25 minutes | SpringBoard waits for LaunchServices, which registers every application afresh (`/private/var` is a new memory filesystem each boot) | not a hang: watch `lsd` in `python3 qemu/touch.py stacks top`, and the first `tl: a` line in the log when the run loop turns. `VARSTORE=1` gives the run a `/private/var` that outlives it — that is the only thing that removes the registration work, and the second run measures whether it does |
+| `var_store: the saver did not answer in 45000 ms` at the end of a run | the kernel asks the saver for the volume on the way back to the loader and waits `var_save_ms` for the answer (`bsd/dev/hakios.ufs.c`, `hakios_var_save_on_return`); a whole volume takes longer than that | expected, and harmless: each slot is written in turn and the header goes last, so the newest complete slot is what the next boot loads. The periodic save (`com.hakios.varstore.plist`, every 300 s) is what actually carries the store. Raise `var_save_ms` on the guest command line to give the last save more room |
+| `var_store: no store yet: /private/var stays as init made it` | nothing has been written to `qemu/var.img` yet — the first `VARSTORE=1` run writes it | not a failure. Watch for `var_store: saving into slot 0` and, on the host, `du qemu/var.img` leaving zero |
+| SpringBoard goes quiet a couple of minutes in and never draws; `touch.py stacks SpringBoard` says `3 threads` and `top` still shows it using 20 % of a processor | a restored `/private/var` of 16–19 MB turns `VARSTORE=1` on (`logs/qemu-run7.log`, `logs/qemu-run8.log`: same stack at 704 s and 1124 s, no `removeOverlay`) | not explained yet. Until it is, boot without `VARSTORE`: run 5 reaches the overlay at guest 1088.9 s that way (`logs/qemu-long5.log`) |
 
 ## Status
 
@@ -183,10 +211,12 @@ mind if you start several instances.
 | APFS images (`REST=1 userland/build.sh`) | **verified**, `system.apfs` 2.47 GB + `root.apfs` 4 MB, `BUILD_EXIT=0` |
 | iOS boot to userland (`launchd`, `backboardd`, `SpringBoard`) | **verified**, `logs/qemu.log`: `SpringBoard [7] job state = running`, `backboardd[13] SystemShell connected ... com.apple.springboard`, `BootUI addOverlay` |
 | Display (ramfb, loader-set 1125×2436) | **verified rendering** — BootUI overlay drawn white-on-black, `logs/screen-02.png` |
-| Lock Screen | **not yet shown** — SpringBoard dismisses it 10 s in unless `autounlock=0` is passed |
+| Lock Screen | **stays, as asked** — `autounlock=0` prints `hakios: the lock screen stays until it is swiped away` (`logs/qemu-long5.log:1341`) and the screen at that moment is drawn, not black: `logs/l5-ui-now.ppm`, 1125×2436, all 2 740 500 pixels non-black. What is on it (clock, date) has not been read back pixel by pixel |
+| `/private/var` kept between runs (`VARSTORE=1`) | **writes and restores, and currently freezes SpringBoard** — the save path is proven (`logs/qemu-storeprobe.log`: `slot 0: generation 1, 209 entries, 19344 bytes`, `5 blocks into the flash`, `qemu/var.img` from zero blocks to 64) and the restore is too (`logs/qemu-run7.log`: `slot 0: generation 5 … 6717 entries, 16332312 bytes`, then `2944 directories, 628 files (15347820 bytes)`; `logs/qemu-run8.log`: generation 9, `3091 directories, 654 files (18232867 bytes)`). But with a volume that size SpringBoard stops at startup: `ustacks: SpringBoard[9] 3 threads`, the same stack at 704 s and at 1124 s, and no `BootUI removeOverlay` — where run 6c, whose store held 8 files, reached the overlay at 1430 s and run 5, with no store, at 1088.9 s. `VARSTORE` is not yet a way to shorten the boot; it is a bug to find. The ask on the way out goes unanswered either way (`the saver did not answer in 45000 ms`) |
 | Home Screen (widgets, icon grid, dock) | **verified**, `logs/l2-1800.ppm`: SpringBoard's own page, 6–9 fps (`MiniIOMobileFramebuffer: 46 frames in 5003 ms`), `BootUI removeOverlayWithAnimationSettings: Removing the overlay` at guest 1707 s |
-| Boot to a drawn screen, QEMU / TCG, 4 vCPU (this host) | **measured** 1763 s guest time (`tl: a 1763048196 …`, the main run loop's first turn) |
-| Input (touch, Home, power, volume) | partly tested — `virtio-tablet` events reach the iOS input stack (`hakios: input: sample type 1 finger 0 …`), and a swipe changed the screen (`logs/l2-unlock.ppm` vs `logs/l2-unswiped.ppm`); no gesture verified end to end |
+| Boot to a drawn screen, QEMU / TCG, 4 vCPU (this host) | **measured** — run 5 (no store): `BootUI removeOverlayWithAnimationSettings: Removing the overlay` at wall 19:57:22 with the run loop's first turn at guest 1088.9 s (`tl: a 1088898620`); run 3 (older settings): 1763 s. Run 6c, store holding 8 files, 1430 s. Runs 7 and 8, store holding 16–19 MB, never got there: SpringBoard stopped at startup with 3 threads |
+| Drawing cost, software renderer | **measured**, `logs/qemu-long5.log`: `MiniIOMobileFramebuffer: 37 frames in 5312 ms (6 a second), 8076 us each in the driver` at 1125×2436 — 2.74 Mpx a frame through TCG, no GPU. `fbscale=2` measured worse, not better (`54727 us each`, `logs/qemu-run7.log`), because the picture is still scaled up to the panel |
+| Input (touch, Home, power, volume) | partly tested — `virtio-tablet` events reach the iOS input stack (`hakios: input: sample type 1 finger 0 …`), a swipe changes the screen (`logs/l2-unlock.ppm` vs `logs/l2-unswiped.ppm`, and `logs/l5-after-swipe.ppm` vs `logs/l5-before-swipe.ppm`). The lag when tapping is measured, and it is not the driver: `tl: i` prints the sample's `mach_absolute_time()` from the kernel, the injector's `read()`, and the handover to IOHID; over run 5's 434 distinct samples the queue wait is median 76.5 s (min 2.8 s, max 191.8 s, none under 1 s) while the handover after the read is median 21 ms (p75 120 ms). The guest starves its own input thread, which is what a tap feels like 2.74 Mpx a frame of TCG later. No gesture verified end to end |
 | Audio, network | untested here |
 | Kernel rebuild from source in WSL2 | not yet run here (prebuilt kernel used so far; needs theos + `iPhoneOS16.5.sdk`) |
 
