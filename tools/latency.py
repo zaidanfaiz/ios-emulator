@@ -24,12 +24,20 @@ constant offset -- the scroll view's slop before it starts to follow -- does not
 The stages are averaged over the same frames and samples, and what is left between the event
 system and the frame -- the application's handling and the wait for the next frame of
 CoreAnimation's clock -- is the difference.
+
+Without a recording there is no end-to-end number, but the two stages between the kernel and the
+event system still are worth having: they say whether a tap that feels late waited for the window
+server to be scheduled or for its own handing over, and how many newer samples were already in the
+queue by the time it was read.
 """
 import re
 import struct
 import sys
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:             # only the recording path needs it (content_offsets, fit_lag)
+    np = None
 
 
 def micros_lines(paths):
@@ -173,6 +181,33 @@ def mean(values):
     return sum(values) / len(values) if values else float('nan')
 
 
+def stages(samples, reads):
+    """The two stages before the event system, and how much newer work was waiting when a sample was read."""
+    posted = {s[0]: s for s in samples}
+    waits, sends, behind = [], [], []
+    for at, read, sent, kind in reads:
+        if at not in posted:
+            continue
+        waits.append(read - at)
+        sends.append(sent - read)
+        behind.append(sum(1 for s in samples if at < s[0] <= read))
+    if not waits:
+        return
+
+    def line(name, values, unit, suffix):
+        values = sorted(values)
+        n = len(values)
+        print(f'  {name}: min {values[0] / unit:.2f} median {values[n // 2] / unit:.2f} '
+              f'p75 {values[3 * n // 4] / unit:.2f} max {values[-1] / unit:.2f} {suffix}')
+
+    line('kernel to window server (the touch device read)', waits, 1e6, 's')
+    line('window server to event system', sends, 1e3, 'ms')
+    behind.sort()
+    n = len(behind)
+    print(f'  newer samples waiting when one was read: median {behind[n // 2]}, p75 {behind[3 * n // 4]}, '
+          f'max {behind[-1]}')
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -181,6 +216,10 @@ def main():
     samples, reads, frames, swaps, shows, chip = parse(micros_lines(logs))
     print(f'latency.py: {len(samples)} samples, {len(reads)} read by the window server, {len(frames)} frames drawn, '
           f'{len(swaps)} handed over, {len(shows)} shown; {len(chip)} reports read from the touch chip')
+    if not raws:
+        stages(samples, reads)
+    elif np is None:
+        sys.exit('latency.py: a recording needs numpy (python3-numpy); the logs alone do not')
     if chip:
         found = [seen - before for before, seen, read in chip if before]
         took = [read - seen for before, seen, read in chip]
